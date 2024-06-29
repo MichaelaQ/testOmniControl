@@ -65,6 +65,26 @@ def collate(batch):
     if 'hint' in notnone_batches[0] and notnone_batches[0]['hint'] is not None:
         hint = [b['hint']for b in notnone_batches]
         cond['y'].update({'hint': torch.as_tensor(hint)})
+
+    if 'O' in notnone_batches[0]:
+        O = [b['O']for b in notnone_batches]
+        cond['y'].update({'O': torch.as_tensor(O)})    
+
+    if 'C' in notnone_batches[0]:
+        C = [b['C']for b in notnone_batches]
+        cond['y'].update({'C': torch.as_tensor(C)})
+
+    if 'E' in notnone_batches[0]:
+        E = [b['E']for b in notnone_batches]
+        cond['y'].update({'E': torch.as_tensor(E)})
+
+    if 'A' in notnone_batches[0]:
+        A = [b['A']for b in notnone_batches]
+        cond['y'].update({'A': torch.as_tensor(A)})
+
+    if 'N' in notnone_batches[0]:
+        N = [b['N']for b in notnone_batches]
+        cond['y'].update({'N': torch.as_tensor(N)})
     
     return motion, cond
 
@@ -75,7 +95,12 @@ def t2m_collate(batch):
         'text': b[2], #b[0]['caption']
         'tokens': b[6],
         'lengths': b[5],
-        'hint': b[-1],
+        'hint': b[7],
+        'O':b[8],
+        'C':b[9],
+        'E':b[10],
+        'A':b[11],
+        'N':b[12],
     } for b in batch]
     return collate(adapted_batch)
 

@@ -7,6 +7,7 @@ import random
 import codecs as cs
 from tqdm import tqdm
 import spacy
+import re
 
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.humanml.utils.word_vectorizer import WordVectorizer
@@ -24,7 +25,7 @@ def collate_fn(batch):
 
 '''For use of training text motion matching model, and evaluations'''
 class Text2MotionDatasetV2(data.Dataset):
-    def __init__(self, opt, mean, std, split_file, w_vectorizer, mode, control_joint=0, density=100):
+    def __init__(self, opt, mean, std, split_file, w_vectorizer, mode, control_joint=0, density=100,O=0.0,C=0.0,E=0.0,A=0.0,N=0.0):
         self.opt = opt
         self.w_vectorizer = w_vectorizer
         self.max_length = 20
@@ -34,19 +35,24 @@ class Text2MotionDatasetV2(data.Dataset):
         min_motion_len = 40 if self.opt.dataset_name =='t2m' else 24
         self.control_joint = control_joint
         self.density = density
+        self.O = O
+        self.C = C
+        self.E = E
+        self.A = A
+        self.N = N
 
         data_dict = {}
         id_list = []
         with cs.open(split_file, 'r') as f:
             for line in f.readlines():
-                id_list.append(line.strip())
+                id_list.append(line.strip()) #读取训练数据集id
         # id_list = id_list[:200]
-
+        ocean = np.load(pjoin(opt.data_root, 'big_five.npy')) #读取大五人格数值
         new_name_list = []
         length_list = []
         for name in tqdm(id_list):
             try:
-                motion = np.load(pjoin(opt.motion_dir, name + '.npy'))
+                motion = np.load(pjoin(opt.motion_dir, name + '.npy')) #[帧数，263]
                 if (len(motion)) < min_motion_len or (len(motion) >= 200):
                     continue
                 text_data = []
@@ -64,10 +70,10 @@ class Text2MotionDatasetV2(data.Dataset):
 
                         text_dict['caption'] = caption
                         text_dict['tokens'] = tokens
-                        if f_tag == 0.0 and to_tag == 0.0:
+                        if f_tag == 0.0 and to_tag == 0.0: #文本描述针对整个序列
                             flag = True
                             text_data.append(text_dict)
-                        else:
+                        else: #文本描述针对部分序列，进行处理
                             try:
                                 n_motion = motion[int(f_tag*20) : int(to_tag*20)]
                                 if (len(n_motion)) < min_motion_len or (len(n_motion) >= 200):
@@ -86,15 +92,29 @@ class Text2MotionDatasetV2(data.Dataset):
                                 # break
 
                 if flag:
+                    gNumber = re.search(r'G(\d+)', name).group(1)
+                    pNumber = re.search(r'P(\d+)', name).group(1)
+                    oceanID = (int(gNumber)-1)*2 + int(pNumber) - 1
+                    self.O = ocean[oceanID][0]
+                    self.C = ocean[oceanID][1]
+                    self.E = ocean[oceanID][2]
+                    self.A = ocean[oceanID][3]
+                    self.N = ocean[oceanID][4]
+
                     data_dict[name] = {'motion': motion,
                                        'length': len(motion),
-                                       'text': text_data}
+                                       'text': text_data,
+                                       'O':self.O,
+                                       'C':self.C,
+                                       'E':self.E,
+                                       'A':self.A,
+                                       'N':self.N,}
                     new_name_list.append(name)
                     length_list.append(len(motion))
             except:
                 pass
 
-        name_list, length_list = zip(*sorted(zip(new_name_list, length_list), key=lambda x: x[1]))
+        name_list, length_list = zip(*sorted(zip(new_name_list, length_list), key=lambda x: x[1])) #存放符合帧数条件的数据集id及对应帧数
 
         self.mean = mean
         self.std = std
@@ -102,6 +122,8 @@ class Text2MotionDatasetV2(data.Dataset):
             spatial_norm_path = './dataset/humanml_spatial_norm'
         elif 'KIT' in opt.data_root:
             spatial_norm_path = './dataset/kit_spatial_norm'
+        elif 'OCEAN' in opt.data_root:
+            spatial_norm_path = './dataset/humanml_spatial_norm'
         else:
             raise NotImplementedError('unknown dataset')
         self.raw_mean = np.load(pjoin(spatial_norm_path, 'Mean_raw.npy'))
@@ -229,19 +251,24 @@ class Text2MotionDatasetV2(data.Dataset):
     def __len__(self):
         return len(self.data_dict) - self.pointer
 
-    def __getitem__(self, item):
+    def __getitem__(self, item): #通过下标，索引数据
         idx = self.pointer + item
         data = self.data_dict[self.name_list[idx]]
         motion, m_length, text_list = data['motion'], data['length'], data['text']
         # Randomly select a caption
         text_data = random.choice(text_list)
         caption, tokens = text_data['caption'], text_data['tokens']
+        O = data['O']
+        C = data['C']
+        E = data['E']
+        A = data['A']
+        N = data['N']
 
         if len(tokens) < self.opt.max_text_len:
             # pad with "unk"
             tokens = ['sos/OTHER'] + tokens + ['eos/OTHER']
             sent_len = len(tokens)
-            tokens = tokens + ['unk/OTHER'] * (self.opt.max_text_len + 2 - sent_len)
+            tokens = tokens + ['unk/OTHER'] * (self.opt.max_text_len + 2 - sent_len) #tokens进行填充，填充到20，再加上开始标记和结束标记
         else:
             # crop
             tokens = tokens[:self.opt.max_text_len]
@@ -250,7 +277,7 @@ class Text2MotionDatasetV2(data.Dataset):
         pos_one_hots = []
         word_embeddings = []
         for token in tokens:
-            word_emb, pos_oh = self.w_vectorizer[token]
+            word_emb, pos_oh = self.w_vectorizer[token] #pos_oh,是根据POS_enumerator获得的embedding
             pos_one_hots.append(pos_oh[None, :])
             word_embeddings.append(word_emb[None, :])
         pos_one_hots = np.concatenate(pos_one_hots, axis=0)
@@ -282,7 +309,7 @@ class Text2MotionDatasetV2(data.Dataset):
             # hint = self.random_mask_cross(joints, n_joints)
             hint = self.random_mask(joints, n_joints)
 
-        hint = hint.reshape(hint.shape[0], -1)
+        hint = hint.reshape(hint.shape[0], -1) #[帧数，22*3]
         if m_length < self.max_motion_length:
             hint = np.concatenate([hint,
                                    np.zeros((self.max_motion_length - m_length, hint.shape[1]))
@@ -296,7 +323,7 @@ class Text2MotionDatasetV2(data.Dataset):
                                      np.zeros((self.max_motion_length - m_length, motion.shape[1]))
                                      ], axis=0)
 
-        return word_embeddings, pos_one_hots, caption, sent_len, motion, m_length, '_'.join(tokens), hint
+        return word_embeddings, pos_one_hots, caption, sent_len, motion, m_length, '_'.join(tokens), hint,O,C,E,A,N
 
 
 class TextOnlyDataset(data.Dataset):
@@ -440,3 +467,61 @@ class HumanML3D(data.Dataset):
 class KIT(HumanML3D):
     def __init__(self, mode, datapath='./dataset/kit_opt.txt', split="train", **kwargs):
         super(KIT, self).__init__(mode, datapath, split, **kwargs)
+
+
+class Interx(data.Dataset):
+    def __init__(self, mode, datapath='dataset/interx_opt.txt', split="train", O=0,C=0,E=0,A=0,N=0, **kwargs):
+        self.mode = mode
+        
+        self.dataset_name = 'interx'
+        self.dataname = 'interx'
+
+        # Configurations of T2M dataset and KIT dataset is almost the same
+        abs_base_path = f'.'
+        dataset_opt_path = pjoin(abs_base_path, datapath)
+        device = None  # torch.device('cuda:4') # This param is not in use in this context
+        opt = get_opt(dataset_opt_path, device)
+        opt.meta_dir = pjoin(abs_base_path, opt.meta_dir)
+        opt.motion_dir = pjoin(abs_base_path, opt.motion_dir) #humanml3d表示位置路径
+        opt.text_dir = pjoin(abs_base_path, opt.text_dir) #处理好后text文件路径
+        opt.model_dir = pjoin(abs_base_path, opt.model_dir) #？
+        opt.checkpoints_dir = pjoin(abs_base_path, opt.checkpoints_dir) #？
+        opt.data_root = pjoin(abs_base_path, opt.data_root) #interx数据集位置
+        opt.save_root = pjoin(abs_base_path, opt.save_root) #？
+        opt.meta_dir = './dataset'  #存放ground_truth均值和方差的位置
+        self.opt = opt
+        print('Loading dataset %s ...' % opt.dataset_name)
+
+        if mode == 'gt':
+            # used by T2M models (including evaluators)
+            self.mean = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_mean.npy'))#待修改
+            self.std = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_std.npy')) #待修改
+        elif mode in ['train', 'eval', 'text_only']:
+            # used by our models
+            self.mean = np.load(pjoin(opt.data_root, 'Mean.npy'))
+            self.std = np.load(pjoin(opt.data_root, 'Std.npy'))
+
+        if mode == 'eval':
+            # used by T2M models (including evaluators)
+            # this is to translate their norms to ours
+            self.mean_for_eval = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_mean.npy'))
+            self.std_for_eval = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_std.npy'))
+
+        self.split_file = pjoin(opt.data_root, f'{split}.txt')
+        if mode == 'text_only':
+            self.t2m_dataset = TextOnlyDataset(self.opt, self.mean, self.std, self.split_file)
+        else:
+            self.w_vectorizer = WordVectorizer(pjoin(abs_base_path, 'glove'), 'our_vab')
+            self.t2m_dataset = Text2MotionDatasetV2(self.opt, self.mean, self.std, self.split_file, self.w_vectorizer, mode, O,C,E,A,N)
+            self.num_actions = 1 # dummy placeholder
+
+        assert len(self.t2m_dataset) > 1, 'You loaded an empty dataset, ' \
+                                          'it is probably because your data dir has only texts and no motions.\n' \
+                                          'To train and evaluate MDM you should get the FULL data as described ' \
+                                          'in the README file.'
+
+    def __getitem__(self, item):
+        return self.t2m_dataset.__getitem__(item)
+
+    def __len__(self):
+        return self.t2m_dataset.__len__()

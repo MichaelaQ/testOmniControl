@@ -2,6 +2,7 @@
 from model.cmdm import CMDM
 from diffusion import gaussian_diffusion as gd
 from diffusion.respace import SpacedDiffusion, space_timesteps
+from model.OCEANmdm import OCEANMDM
 
 
 def load_model_wo_clip(model, state_dict):
@@ -12,7 +13,8 @@ def load_model_wo_clip(model, state_dict):
 
 
 def create_model_and_diffusion(args, data):
-    model = CMDM(**get_model_args(args, data))
+    # model = CMDM(**get_model_args(args, data))
+    model = OCEANMDM(**get_model_args(args, data))
     diffusion = create_gaussian_diffusion(args)
     return model, diffusion
 
@@ -40,6 +42,11 @@ def get_model_args(args, data):
         data_rep = 'hml_vec'
         njoints = 251
         nfeats = 1
+    elif args.dataset == 'interx':
+        data_rep = 'hml_vec'
+        njoints = 263 
+        nfeats = 1
+
 
     return {'modeltype': '', 'njoints': njoints, 'nfeats': nfeats, 'num_actions': num_actions,
             'translation': True, 'pose_rep': 'rot6d', 'glob': True, 'glob_rot': True,

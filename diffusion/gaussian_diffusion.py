@@ -206,6 +206,9 @@ class GaussianDiffusion:
         elif dataset == 'kit':
             spatial_norm_path = './dataset/kit_spatial_norm'
             data_root = './dataset/KIT-ML'
+        elif dataset == 'interx':
+            spatial_norm_path = './dataset/humanml_spatial_norm'
+            data_root = '/sata/public/yyqi/Dataset/OCEAN'            
         else:
             raise NotImplementedError('Dataset not recognized!!')
         self.raw_mean = torch.from_numpy(np.load(pjoin(spatial_norm_path, 'Mean_raw.npy')))
@@ -714,7 +717,7 @@ class GaussianDiffusion:
         if noise is None:
             noise = th.randn_like(x_start)
         x_t = self.q_sample(x_start, t, noise=noise)
-        x_t = self.guide(x_t, t, model_kwargs=model_kwargs, train=True)
+        # x_t = self.guide(x_t, t, model_kwargs=model_kwargs, train=True)
         terms = {}
 
         model_output = model(x_t, self._scale_timesteps(t), **model_kwargs) #经过MDM预测后的结果[bs,d,1,seqlen]
@@ -725,7 +728,7 @@ class GaussianDiffusion:
             )[0],
             ModelMeanType.START_X: x_start,
             ModelMeanType.EPSILON: noise,
-        }[self.model_mean_type]
+        }[self.model_mean_type] #选取预测的x_start
         assert model_output.shape == target.shape == x_start.shape  # [bs, njoints, nfeats, nframes]
 
         terms["rot_mse"] = self.masked_l2(target, model_output, mask) # mean_flat(rot_mse) 给定掩码条件下的L2损失

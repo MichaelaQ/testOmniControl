@@ -98,14 +98,24 @@ def add_model_options(parser):
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
-    group.add_argument("--dataset", default='humanml', choices=['humanml', 'kit', 'humanact12', 'uestc'], type=str,
+    group.add_argument("--dataset", default='humanml', choices=['humanml', 'kit', 'humanact12', 'uestc','interx'], type=str,
                        help="Dataset name (choose from list).")
     group.add_argument("--data_dir", default="", type=str,
                        help="If empty, will use defaults according to the specified dataset.")
-    group.add_argument("--control_joint", default=0, type=int,
-                       help="controlling joint")
-    group.add_argument("--density", default=100, type=int,
-                       help="density")
+    # group.add_argument("--control_joint", default=0, type=int,
+    #                    help="controlling joint")
+    # group.add_argument("--density", default=100, type=int,
+    #                    help="density")
+    group.add_argument("--O", default=0.0, type=float,
+                       help="openness")
+    group.add_argument("--C", default=0.0, type=float,
+                       help="conscientiousness")
+    group.add_argument("--E", default=0.0, type=float,
+                       help="extraversion")
+    group.add_argument("--A", default=0.0, type=float,
+                       help="agreeableness")
+    group.add_argument("--N", default=0.0, type=float,
+                       help="neuroticism")
 
 
 def add_training_options(parser):
@@ -161,8 +171,10 @@ def add_generate_options(parser):
     group.add_argument("--motion_length", default=6.0, type=float,
                        help="The length of the sampled motion [in seconds]. "
                             "Maximum is 9.8 for HumanML3D (text-to-motion), and 2.0 for HumanAct12 (action-to-motion)")
-    group.add_argument("--cond_mode", default='both_text_spatial', type=str,
-                       help="generation mode: both_text_spatial, only_text, only_spatial. Other words will be used as text prompt.")
+    # group.add_argument("--cond_mode", default='both_text_spatial', type=str,
+    #                    help="generation mode: both_text_spatial, only_text, only_spatial. Other words will be used as text prompt.")
+    group.add_argument("--cond_mode", default='both_text_ocean', type=str,
+                    help="generation mode: both_text_ocean, only_text, only_ocean. Other words will be used as text prompt.")
     group.add_argument("--text_prompt", default='predefined', type=str,
                        help="A text prompt to be generated. If empty, will take text prompts from dataset.")
 
