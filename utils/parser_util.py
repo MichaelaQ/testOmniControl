@@ -102,10 +102,10 @@ def add_data_options(parser):
                        help="Dataset name (choose from list).")
     group.add_argument("--data_dir", default="", type=str,
                        help="If empty, will use defaults according to the specified dataset.")
-    # group.add_argument("--control_joint", default=0, type=int,
-    #                    help="controlling joint")
-    # group.add_argument("--density", default=100, type=int,
-    #                    help="density")
+    group.add_argument("--control_joint", default=0, type=int,
+                       help="controlling joint")
+    group.add_argument("--density", default=100, type=int,
+                       help="density")
     group.add_argument("--O", default=0.0, type=float,
                        help="openness")
     group.add_argument("--C", default=0.0, type=float,

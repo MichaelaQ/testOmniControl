@@ -44,8 +44,8 @@ def evaluate_matching_score(eval_wrapper, motion_loaders, file):
                 )
                 dist_mat = euclidean_distance_matrix(text_embeddings.cpu().numpy(),
                                                      motion_embeddings.cpu().numpy())
-                if np.isnan(dist_mat).any() or np.isinf(dist_mat).any():
-                    continue
+                # if np.isnan(dist_mat).any() or np.isinf(dist_mat).any():
+                #     continue
                 
                 matching_score_sum += dist_mat.trace()
 
