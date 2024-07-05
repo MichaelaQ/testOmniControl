@@ -649,24 +649,38 @@ def sample_points_forward_back_verticel(n):
 
 
 def collate_all(n_frames, dataset):
-    if dataset == 'humanml':
+    if dataset == 'humanml': #存放全局坐标的均值和方差
         spatial_norm_path = './dataset/humanml_spatial_norm'
     elif dataset == 'kit':
         spatial_norm_path = './dataset/kit_spatial_norm'
+    elif dataset == 'interx':
+        spatial_norm_path = '/sata/public/yyqi/Dataset/OCEAN'
     else:
         raise NotImplementedError('unknown dataset')
     raw_mean = np.load(pjoin(spatial_norm_path, 'Mean_raw.npy'))
     raw_std = np.load(pjoin(spatial_norm_path, 'Std_raw.npy'))
 
+
     texts0, hints0, _ = pelvis_dense_text_control_example(n_frames, raw_mean, raw_std, index=0)
     texts1, hints1, _ = pelvis_sparse_text_control_example(n_frames, raw_mean, raw_std, index=0)
-    texts2, hints2, _ = wrist_text_control_example(n_frames, raw_mean, raw_std, index=0)
-    texts3, hints3, _ = head_text_control_example(n_frames, raw_mean, raw_std, index=0)
-    texts4, hints4, _ = foot_text_control_example(n_frames, raw_mean, raw_std, index=0)
-    # unnatural spatial control signals, e.g. spiral forward or teleportation
-    texts5, hints5, _ = unnatural_text_control_example(n_frames, raw_mean, raw_std, index=0)
-    texts6, hints6, _ = combination_text_control_example(n_frames, raw_mean, raw_std, index=0)
-    texts7, hints7, _ = motion_inbetweening(n_frames, raw_mean, raw_std, index=0)
-    texts = texts0 + texts1 + texts2 + texts3 + texts4 + texts5 + texts6 + texts7
-    hints = np.concatenate([hints0, hints1, hints2, hints3, hints4, hints5, hints6, hints7], axis=0)
-    return texts, hints
+    # texts2, hints2, _ = wrist_text_control_example(n_frames, raw_mean, raw_std, index=0)
+    # texts3, hints3, _ = head_text_control_example(n_frames, raw_mean, raw_std, index=0)
+    # texts4, hints4, _ = foot_text_control_example(n_frames, raw_mean, raw_std, index=0)
+    # # unnatural spatial control signals, e.g. spiral forward or teleportation
+    # texts5, hints5, _ = unnatural_text_control_example(n_frames, raw_mean, raw_std, index=0)
+    # texts6, hints6, _ = combination_text_control_example(n_frames, raw_mean, raw_std, index=0)
+    # texts7, hints7, _ = motion_inbetweening(n_frames, raw_mean, raw_std, index=0)
+    # texts = texts0 + texts1 + texts2 + texts3 + texts4 + texts5 + texts6 + texts7
+    hints = np.concatenate([hints0, hints1], axis=0)
+
+    texts = ['a person walks.',
+        'a person is walking and has injured their leg',
+        'a person bows',
+        'A person stands and kicks with his left leg.']
+    O = [1,0,0,0]
+    C = [0,1,0,0]
+    E = [0,0,1,0]
+    A = [0,0,0,1]
+    N = [0,0,0,0]
+
+    return texts,O,C,E,A,N 

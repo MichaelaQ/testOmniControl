@@ -52,53 +52,104 @@ class Skeleton(object):
 
     # face_joint_idx should follow the order of right hip, left hip, right shoulder, left shoulder
     # joints (batch_size, joints_num, 3)
+
+    # def inverse_kinematics_np(self, joints, face_joint_idx, smooth_forward=False):
+    #     assert len(face_joint_idx) == 4
+    #     '''Get Forward Direction'''
+    #     l_hip, r_hip, sdr_r, sdr_l = face_joint_idx
+    #     across1 = joints[:, r_hip] - joints[:, l_hip]
+    #     across2 = joints[:, sdr_r] - joints[:, sdr_l]
+    #     across = across1 + across2
+    #     across = across / np.sqrt((across**2).sum(axis=-1))[:, np.newaxis]
+    #     # print(across1.shape, across2.shape)
+
+    #     # forward (batch_size, 3)
+    #     forward = np.cross(np.array([[0, 1, 0]]), across, axis=-1)
+    #     if smooth_forward:
+    #         forward = filters.gaussian_filter1d(forward, 20, axis=0, mode='nearest')
+    #         # forward (batch_size, 3)
+    #     forward = forward / np.sqrt((forward**2).sum(axis=-1))[..., np.newaxis]
+
+    #     '''Get Root Rotation'''
+    #     target = np.array([[0,0,1]]).repeat(len(forward), axis=0)
+    #     root_quat = qbetween_np(forward, target)
+
+    #     '''Inverse Kinematics'''
+    #     # quat_params (batch_size, joints_num, 4)
+    #     # print(joints.shape[:-1])
+    #     quat_params = np.zeros(joints.shape[:-1] + (4,))
+    #     # print(quat_params.shape)
+    #     root_quat[0] = np.array([[1.0, 0.0, 0.0, 0.0]])
+    #     quat_params[:, 0] = root_quat
+    #     # quat_params[0, 0] = np.array([[1.0, 0.0, 0.0, 0.0]])
+    #     for chain in self._kinematic_tree:
+    #         R = root_quat
+    #         for j in range(len(chain) - 1):
+    #             # (batch, 3)
+    #             u = self._raw_offset_np[chain[j+1]][np.newaxis,...].repeat(len(joints), axis=0)
+    #             # print(u.shape)
+    #             # (batch, 3)
+    #             v = joints[:, chain[j+1]] - joints[:, chain[j]]
+    #             v = v / np.sqrt((v**2).sum(axis=-1))[:, np.newaxis]
+    #             # print(u.shape, v.shape)
+    #             rot_u_v = qbetween_np(u, v)
+
+    #             R_loc = qmul_np(qinv_np(R), rot_u_v)
+
+    #             quat_params[:,chain[j + 1], :] = R_loc
+    #             R = qmul_np(R, R_loc)
+
+    #     return quat_params
+
+
     def inverse_kinematics_np(self, joints, face_joint_idx, smooth_forward=False):
         assert len(face_joint_idx) == 4
         '''Get Forward Direction'''
         l_hip, r_hip, sdr_r, sdr_l = face_joint_idx
-        across1 = joints[:, r_hip] - joints[:, l_hip]
-        across2 = joints[:, sdr_r] - joints[:, sdr_l]
-        across = across1 + across2
-        across = across / np.sqrt((across**2).sum(axis=-1))[:, np.newaxis]
-        # print(across1.shape, across2.shape)
 
-        # forward (batch_size, 3)
-        forward = np.cross(np.array([[0, 1, 0]]), across, axis=-1)
-        if smooth_forward:
-            forward = filters.gaussian_filter1d(forward, 20, axis=0, mode='nearest')
-            # forward (batch_size, 3)
-        forward = forward / np.sqrt((forward**2).sum(axis=-1))[..., np.newaxis]
+        quat_params_all = []
 
-        '''Get Root Rotation'''
-        target = np.array([[0,0,1]]).repeat(len(forward), axis=0)
-        root_quat = qbetween_np(forward, target)
+        for t in range(joints.shape[0]): #[bs,seqlen,njoint,3]
+            joints_t = joints[t] #[seqlen,njoint,3]  
 
-        '''Inverse Kinematics'''
-        # quat_params (batch_size, joints_num, 4)
-        # print(joints.shape[:-1])
-        quat_params = np.zeros(joints.shape[:-1] + (4,))
-        # print(quat_params.shape)
-        root_quat[0] = np.array([[1.0, 0.0, 0.0, 0.0]])
-        quat_params[:, 0] = root_quat
-        # quat_params[0, 0] = np.array([[1.0, 0.0, 0.0, 0.0]])
-        for chain in self._kinematic_tree:
-            R = root_quat
-            for j in range(len(chain) - 1):
-                # (batch, 3)
-                u = self._raw_offset_np[chain[j+1]][np.newaxis,...].repeat(len(joints), axis=0)
-                # print(u.shape)
-                # (batch, 3)
-                v = joints[:, chain[j+1]] - joints[:, chain[j]]
-                v = v / np.sqrt((v**2).sum(axis=-1))[:, np.newaxis]
-                # print(u.shape, v.shape)
-                rot_u_v = qbetween_np(u, v)
+            across1 = joints_t[:, r_hip] - joints_t[:, l_hip]
+            across2 = joints_t[:, sdr_r] - joints_t[:, sdr_l]
+            across = across1 + across2
+            across = across / np.sqrt((across**2).sum(axis=-1))[:, np.newaxis]
 
-                R_loc = qmul_np(qinv_np(R), rot_u_v)
+            # forward (seqlen, 3)
+            forward = np.cross(np.array([[0, 1, 0]]), across, axis=-1)
+            if smooth_forward:
+                forward = filters.gaussian_filter1d(forward, 20, axis=0, mode='nearest')
+            forward = forward / np.sqrt((forward**2).sum(axis=-1))[..., np.newaxis]
 
-                quat_params[:,chain[j + 1], :] = R_loc
-                R = qmul_np(R, R_loc)
+            '''Get Root Rotation'''
+            target = np.array([[0,0,1]]).repeat(len(forward), axis=0)
+            root_quat = qbetween_np(forward, target)
 
-        return quat_params
+            '''Inverse Kinematics'''
+            quat_params = np.zeros(joints_t.shape[:-1] + (4,))
+            root_quat[0] = np.array([[1.0, 0.0, 0.0, 0.0]])
+            quat_params[:,0] = root_quat
+
+            for chain in self._kinematic_tree:
+                R = root_quat
+                for j in range(len(chain) - 1):
+                    u = self._raw_offset_np[chain[j+1]][np.newaxis,...].repeat(len(joints_t), axis=0)
+                    v = joints_t[:, chain[j+1]] - joints_t[:, chain[j]]
+                    v = v / np.sqrt((v**2).sum(axis=-1))[:, np.newaxis]
+                    rot_u_v = qbetween_np(u, v)
+
+                    R_loc = qmul_np(qinv_np(R), rot_u_v)
+                    quat_params[:,chain[j + 1], :] = R_loc
+                    R = qmul_np(R, R_loc)
+
+            quat_params_all.append(quat_params)
+
+
+        quat_params_all = np.stack(quat_params_all, axis=0)
+        return quat_params_all
+
 
     # Be sure root joint is at the beginning of kinematic chains
     def forward_kinematics(self, quat_params, root_pos, skel_joints=None, do_root_R=True):
@@ -130,20 +181,24 @@ class Skeleton(object):
         if skel_joints is not None:
             skel_joints = torch.from_numpy(skel_joints)
             offsets = self.get_offsets_joints_batch(skel_joints)
-        if len(self._offset.shape) == 2:
-            offsets = self._offset.expand(quat_params.shape[0], -1, -1)
-        offsets = offsets.numpy()
+        if len(self._offset.shape) == 2: 
+            offsets = self._offset.expand(quat_params.shape[1], -1, -1)
+        offsets = offsets.numpy() #[seqlen,njoint,3]
         joints = np.zeros(quat_params.shape[:-1] + (3,))
-        joints[:, 0] = root_pos
-        for chain in self._kinematic_tree:
-            if do_root_R:
-                R = quat_params[:, 0]
-            else:
-                R = np.array([[1.0, 0.0, 0.0, 0.0]]).repeat(len(quat_params), axis=0)
-            for i in range(1, len(chain)):
-                R = qmul_np(R, quat_params[:, chain[i]])
-                offset_vec = offsets[:, chain[i]]
-                joints[:, chain[i]] = qrot_np(R, offset_vec) + joints[:, chain[i - 1]]
+        if type(root_pos) is np.ndarray:
+            joints[:,:, 0] = root_pos
+        else:
+            joints[:,:, 0] = root_pos.cpu().detach().numpy()
+        for t in range(quat_params.shape[0]):
+            for chain in self._kinematic_tree:
+                if do_root_R:
+                    R = quat_params[t,:, 0]
+                else:
+                    R = np.array([[1.0, 0.0, 0.0, 0.0]]).repeat(len(quat_params), axis=0)
+                for i in range(1, len(chain)):
+                    R = qmul_np(R, quat_params[t,:, chain[i]])
+                    offset_vec = offsets[:, chain[i]]
+                    joints[t,:, chain[i]] = qrot_np(R, offset_vec) + joints[ t,:, chain[i - 1]]
         return joints
 
     def forward_kinematics_cont6d_np(self, cont6d_params, root_pos, skel_joints=None, do_root_R=True):

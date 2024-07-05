@@ -23,7 +23,7 @@ def main():
 
     if args.save_dir is None:
         raise FileNotFoundError('save_dir was not specified.')
-    elif os.path.exists(args.save_dir) and not args.overwrite:
+    elif os.path.exists(args.save_dir) and not args.overwrite and args.train_platform_type !='TensorboardPlatform':
         raise FileExistsError('save_dir [{}] already exists.'.format(args.save_dir))
     elif not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
@@ -35,7 +35,7 @@ def main():
 
     print("creating data loader...")
     # data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames)
-    data = get_dataset_loader(name= args.dataset, batch_size=args.batch_size, num_frames=args.num_frames ,O = args.O,C = args.C,E = args.E,A = args.A,N = args.N)
+    data = get_dataset_loader(name= args.dataset, batch_size=args.batch_size, num_frames=args.num_frames)
 
     print("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion(args, data)

@@ -26,19 +26,19 @@ def get_collate_fn(name, hml_mode='train'):
         return all_collate
 
 
-def get_dataset(name, num_frames, split='train', hml_mode='train', control_joint=0, density=100,O=0,C=0,E=0,A=0,N=0):
+def get_dataset(name, num_frames, split='train', hml_mode='train', control_joint=0, density=100):
     DATA = get_dataset_class(name)
     if name in ["humanml", "kit"]:
         dataset = DATA(split=split, num_frames=num_frames, mode=hml_mode, control_joint=control_joint, density=density)
     elif name in ["interx"]:
-        dataset = DATA(split=split, num_frames=num_frames, mode=hml_mode, O=O,C=C,E=E,A=A,N=N)
+        dataset = DATA(split=split, num_frames=num_frames, mode=hml_mode)
     else:
         dataset = DATA(split=split, num_frames=num_frames)
     return dataset
 
 
-def get_dataset_loader(name, batch_size, num_frames ,O,C,E,A,N,split='train', hml_mode='train', control_joint=0, density=100):
-    dataset = get_dataset(name, num_frames, split, hml_mode, control_joint, density,O ,C ,E ,A ,N)
+def get_dataset_loader(name, batch_size, num_frames ,split='train', hml_mode='train', control_joint=0, density=100):
+    dataset = get_dataset(name, num_frames, split, hml_mode, control_joint, density)
     collate = get_collate_fn(name, hml_mode) #自定义batch数据的输出形式
 
     loader = DataLoader(

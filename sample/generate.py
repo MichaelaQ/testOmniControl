@@ -27,10 +27,11 @@ def main():
     out_path = args.output_dir
     name = os.path.basename(os.path.dirname(args.model_path))
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
-    max_frames = 196 if args.dataset in ['kit', 'humanml'] else 60
+    max_frames = 196 if args.dataset in ['kit', 'humanml','interx'] else 60
     fps = 12.5 if args.dataset == 'kit' else 20
     n_frames = min(max_frames, int(args.motion_length*fps))
     n_frames = 196
+    njoints = 22 if args.dataset in ['humanml','interx'] else 21
     is_using_data = not any([args.text_prompt])
     dist_util.setup_dist(args.device)
     if out_path == '':
@@ -40,18 +41,28 @@ def main():
             out_path += '_' + args.text_prompt.replace(' ', '_').replace('.', '')
 
     hints = None
+    O = None
+    C = None
+    E = None
+    A = None
+    N = None
     # this block must be called BEFORE the dataset is loaded
     if args.text_prompt != '':
         if args.text_prompt == 'predefined':
             # generate hint and text
-            texts, hints = collate_all(n_frames, args.dataset)
+            texts, O ,C ,E ,A , N = collate_all(n_frames, args.dataset)
             args.num_samples = len(texts)
-            if args.cond_mode == 'only_spatial':
+            if args.cond_mode == 'only_ocean': 
                 # only with spatial control signal, and the spatial control signal is defined in utils/text_control_example.py
                 texts = ['' for i in texts]
             elif args.cond_mode == 'only_text':
                 # only with text prompt, and the text prompt is defined in utils/text_control_example.py
-                hints = None
+                hints = None 
+                O = None
+                C = None
+                E = None
+                A = None
+                N = None
         else:
             # otherwise we use text_prompt
             texts = [args.text_prompt]
@@ -82,15 +93,27 @@ def main():
     model.to(dist_util.dev())
     model.eval()  # disable random masking
 
-    if is_using_data:
+    if is_using_data: #是否使用现成数据集
         iterator = iter(data)
         _, model_kwargs = next(iterator)
     else:
         collate_args = [{'inp': torch.zeros(n_frames), 'tokens': None, 'lengths': n_frames}] * args.num_samples
         # t2m
-        collate_args = [dict(arg, text=txt) for arg, txt in zip(collate_args, texts)]
-        if hints is not None:
+        collate_args = [dict(arg, text=txt) for arg, txt in zip(collate_args, texts)] #更新text
+        # if hints is not None: #bs,seqlen,66
+        #     collate_args = [dict(arg, hint=hint) for arg, hint in zip(collate_args, hints)]
+        if O is not None:
+            hints = np.zeros((args.batch_size,n_frames,njoints*3))
             collate_args = [dict(arg, hint=hint) for arg, hint in zip(collate_args, hints)]
+            collate_args = [dict(arg,O=O) for arg,O in zip(collate_args,O) ]  
+        if C is not None:
+            collate_args = [dict(arg,C=C) for arg,C in zip(collate_args,C) ]
+        if E is not None:
+            collate_args = [dict(arg,E=E) for arg,E in zip(collate_args,E) ]
+        if A is not None:
+            collate_args = [dict(arg,A=A) for arg,A in zip(collate_args,A) ]
+        if N is not None:
+            collate_args = [dict(arg,N=N) for arg,N in zip(collate_args,N) ]   
 
         _, model_kwargs = collate(collate_args)
 
@@ -101,8 +124,9 @@ def main():
     all_motions = []
     all_lengths = []
     all_text = []
-    all_hint = []
-    all_hint_for_vis = []
+    # all_hint = []
+    # all_hint_for_vis = []
+    all_personality = []
 
     for rep_i in range(args.num_repetitions):
         print(f'### Sampling [repetitions #{rep_i}]')
@@ -140,33 +164,43 @@ def main():
                                jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
                                get_rotations_back=False)
 
+        """ sample结果的可视化"""
         if args.unconstrained:
             all_text += ['unconstrained'] * args.num_samples
         else:
             text_key = 'text' if 'text' in model_kwargs['y'] else 'action_text'
             all_text += model_kwargs['y'][text_key]
+            all_personality.append(np.stack([
+            model_kwargs['y']['O'].cpu().numpy(),
+            model_kwargs['y']['C'].cpu().numpy(),
+            model_kwargs['y']['E'].cpu().numpy(),
+            model_kwargs['y']['A'].cpu().numpy(),
+            model_kwargs['y']['N'].cpu().numpy()
+        ], axis=1))#[bs,5]
 
-            if 'hint' in model_kwargs['y']:
-                hint = model_kwargs['y']['hint']
-                # denormalize hint
-                if args.dataset == 'humanml':
-                    spatial_norm_path = './dataset/humanml_spatial_norm'
-                elif args.dataset == 'kit':
-                    spatial_norm_path = './dataset/kit_spatial_norm'
-                else:
-                    raise NotImplementedError('unknown dataset')
-                raw_mean = torch.from_numpy(np.load(pjoin(spatial_norm_path, 'Mean_raw.npy'))).cuda()
-                raw_std = torch.from_numpy(np.load(pjoin(spatial_norm_path, 'Std_raw.npy'))).cuda()
-                mask = hint.view(hint.shape[0], hint.shape[1], n_joints, 3).sum(-1) != 0
-                hint = hint * raw_std + raw_mean
-                hint = hint.view(hint.shape[0], hint.shape[1], n_joints, 3) * mask.unsqueeze(-1)
-                hint = hint.view(hint.shape[0], hint.shape[1], -1)
-                # ---
-                all_hint.append(hint.data.cpu().numpy())
-                hint = hint.view(hint.shape[0], hint.shape[1], n_joints, 3)
-                all_hint_for_vis.append(hint.data.cpu().numpy())
+            # if 'hint' in model_kwargs['y']:
+            #     hint = model_kwargs['y']['hint']
+            #     # denormalize hint
+            #     if args.dataset == 'humanml':
+            #         spatial_norm_path = './dataset/humanml_spatial_norm'
+            #     elif args.dataset == 'kit':
+            #         spatial_norm_path = './dataset/kit_spatial_norm'
+            #     elif args.dataset == 'interx':
+            #         spatial_norm_path = './dataset/humanml_spatial_norm'
+            #     else:
+            #         raise NotImplementedError('unknown dataset')
+            #     raw_mean = torch.from_numpy(np.load(pjoin(spatial_norm_path, 'Mean_raw.npy'))).cuda()
+            #     raw_std = torch.from_numpy(np.load(pjoin(spatial_norm_path, 'Std_raw.npy'))).cuda()
+            #     mask = hint.view(hint.shape[0], hint.shape[1], n_joints, 3).sum(-1) != 0
+            #     hint = hint * raw_std + raw_mean
+            #     hint = hint.view(hint.shape[0], hint.shape[1], n_joints, 3) * mask.unsqueeze(-1)
+            #     hint = hint.view(hint.shape[0], hint.shape[1], -1)
+            #     # ---
+            #     all_hint.append(hint.data.cpu().numpy())
+            #     hint = hint.view(hint.shape[0], hint.shape[1], n_joints, 3)
+            #     all_hint_for_vis.append(hint.data.cpu().numpy())
 
-        all_motions.append(sample.cpu().numpy())
+        all_motions.append(sample.cpu().numpy()) #[bs,njoint,3,seqlen]
         all_lengths.append(model_kwargs['y']['lengths'].cpu().numpy())
 
         print(f"created {len(all_motions) * args.batch_size} samples")
@@ -176,14 +210,16 @@ def main():
     all_motions = all_motions[:total_num_samples]  # [bs, njoints, 3, seqlen]
     all_text = all_text[:total_num_samples]
     all_lengths = np.concatenate(all_lengths, axis=0)[:total_num_samples]
-    if 'hint' in model_kwargs['y']:
-        all_hint = np.concatenate(all_hint, axis=0)[:total_num_samples]
-        all_hint_for_vis = np.concatenate(all_hint_for_vis, axis=0)[:total_num_samples]
+    all_personality = np.concatenate(all_personality, axis=0)
+    all_personality = all_personality[:total_num_samples]
+    # if 'hint' in model_kwargs['y']:
+    #     all_hint = np.concatenate(all_hint, axis=0)[:total_num_samples]
+    #     all_hint_for_vis = np.concatenate(all_hint_for_vis, axis=0)[:total_num_samples]
     
-    if len(all_hint) != 0:
-        from utils.simple_eval import simple_eval
-        results = simple_eval(all_motions, all_hint, n_joints)
-        print(results)
+    # if len(all_hint) != 0:
+    #     from utils.simple_eval import simple_eval
+    #     results = simple_eval(all_motions, all_hint, n_joints)
+    #     print(results)
 
     if os.path.exists(out_path):
         shutil.rmtree(out_path)
@@ -192,7 +228,7 @@ def main():
     npy_path = os.path.join(out_path, 'results.npy')
     print(f"saving results file to [{npy_path}]")
     np.save(npy_path,
-            {'motion': all_motions, 'text': all_text, 'lengths': all_lengths, "hint": all_hint_for_vis,
+            {'motion': all_motions, 'text': all_text, 'lengths': all_lengths, 
              'num_samples': args.num_samples, 'num_repetitions': args.num_repetitions})
     with open(npy_path.replace('.npy', '.txt'), 'w') as fw:
         fw.write('\n'.join(all_text))
@@ -211,17 +247,18 @@ def main():
     for sample_i in range(args.num_samples):
         rep_files = []
         for rep_i in range(args.num_repetitions):
-            caption = all_text[rep_i*args.batch_size + sample_i]
+            personality = ''.join(str(i) for i in all_personality[rep_i*args.batch_size + sample_i])
+            caption = all_text[rep_i*args.batch_size + sample_i] + '\n' +personality
             length = all_lengths[rep_i*args.batch_size + sample_i]
             motion = all_motions[rep_i*args.batch_size + sample_i].transpose(2, 0, 1)[:length]
-            if 'hint' in model_kwargs['y']:
-                hint = all_hint_for_vis[rep_i*args.batch_size + sample_i]
-            else:
-                hint = None
+            # if 'hint' in model_kwargs['y']:
+            #     hint = all_hint_for_vis[rep_i*args.batch_size + sample_i]
+            # else:
+            #     hint = None
             save_file = sample_file_template.format(sample_i, rep_i)
             print(sample_print_template.format(caption, sample_i, rep_i, save_file))
             animation_save_path = os.path.join(out_path, save_file)
-            plot_3d_motion(animation_save_path, skeleton, motion, dataset=args.dataset, title=caption, fps=fps, hint=hint)
+            plot_3d_motion(animation_save_path, skeleton, motion, dataset=args.dataset, title=caption, fps=fps)
             # Credit for visualization: https://github.com/EricGuo5513/text-to-motion
             rep_files.append(animation_save_path)
 
@@ -283,7 +320,7 @@ def load_dataset(args, max_frames, n_frames):
                               num_frames=max_frames,
                               split='test',
                               hml_mode='train')
-    if args.dataset in ['kit', 'humanml']:
+    if args.dataset in ['kit', 'humanml','interx']:
         data.dataset.t2m_dataset.fixed_length = n_frames
     return data
 

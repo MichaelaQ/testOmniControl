@@ -138,6 +138,17 @@ class OCEANMDM(torch.nn.Module):
             return cond * (1. - mask)
         else:
             return cond
+        
+    def mask_cond_ocean(self, cond, force_mask=False):
+        seqlen, bs, d = cond.shape
+        if force_mask: #生成全0,屏蔽条件
+            return torch.zeros_like(cond)
+        elif self.training and self.cond_mask_prob > 0.:
+            mask = torch.bernoulli(torch.ones(bs, device=cond.device) * self.cond_mask_prob).view(1,bs, 1)  # 1-> use null_cond, 0-> use real cond
+            mask = mask.expand(seqlen, bs, d)
+            return cond * (1. - mask)
+        else:
+            return cond
 
     def encode_text(self, raw_text):#编码文本
         # raw_text - list (batch_size length) of strings with input text prompts
@@ -185,7 +196,7 @@ class OCEANMDM(torch.nn.Module):
         x = self.c_input_process(x) #[seqlen,bs,d]
 
         # x += guided_hint * seq_mask.permute(1, 0).unsqueeze(-1) #加入条件c，mask后
-        x += guided_hint
+        x += self.mask_cond_ocean(guided_hint, force_mask=force_mask) #加入OCEAN的结果
 
         # adding the timestep embed
         xseq = torch.cat((emb, x), axis=0)  # [seqlen+1, bs, d]
@@ -231,7 +242,13 @@ class OCEANMDM(torch.nn.Module):
             control = self.cmdm_forward(x, timesteps, y)
         else:
             n_joints = 22 if self.njoints == 263 else 21
-            y_ = {'hint': torch.zeros((x.shape[0], x.shape[-1], n_joints * 3), device=x.device)}
+            y_ = {'hint': torch.zeros((x.shape[0], x.shape[-1], n_joints * 3), device=x.device),
+                  'O':torch.zeros((x.shape[0]),device=x.device),
+                  'C':torch.zeros((x.shape[0]),device=x.device),
+                  'E':torch.zeros((x.shape[0]),device=x.device),
+                  'A':torch.zeros((x.shape[0]),device=x.device),
+                  'N':torch.zeros((x.shape[0]),device=x.device)
+                  }
             y_.update(y)
             control = self.cmdm_forward(x, timesteps, y_)
         output = self.mdm_forward(x, timesteps, y, control)

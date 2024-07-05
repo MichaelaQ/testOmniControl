@@ -14,9 +14,11 @@ import torch
 import torch as th
 from copy import deepcopy
 from diffusion.nn import mean_flat, sum_flat
-from data_loaders.humanml.scripts.motion_process import recover_from_ric
+from data_loaders.humanml.scripts.motion_process import recover_from_ric,recover_root_rot_pos,plot_3d_motion
+from data_loaders.humanml.common.skeleton import Skeleton
+from data_loaders.humanml.common.quaternion import *
+from data_loaders.humanml.utils.paramUtil import *
 from os.path import join as pjoin
-
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1.):
     """
@@ -207,7 +209,7 @@ class GaussianDiffusion:
             spatial_norm_path = './dataset/kit_spatial_norm'
             data_root = './dataset/KIT-ML'
         elif dataset == 'interx':
-            spatial_norm_path = './dataset/humanml_spatial_norm'
+            spatial_norm_path = '/sata/public/yyqi/Dataset/OCEAN' 
             data_root = '/sata/public/yyqi/Dataset/OCEAN'            
         else:
             raise NotImplementedError('Dataset not recognized!!')
@@ -316,7 +318,7 @@ class GaussianDiffusion:
 
         B, C = x.shape[:2]
         assert t.shape == (B,)
-        model_output = model(x, self._scale_timesteps(t), **model_kwargs)
+        model_output = model(x, self._scale_timesteps(t), **model_kwargs) #[bs,263,1,seqlen]
 
         if 'inpainting_mask' in model_kwargs['y'].keys() and 'inpainted_motion' in model_kwargs['y'].keys():
             inpainting_mask, inpainted_motion = model_kwargs['y']['inpainting_mask'], model_kwargs['y']['inpainted_motion']
@@ -498,7 +500,218 @@ class GaussianDiffusion:
             if t[0] >= t_stopgrad:
                 x = x - scale * grad
         return x.detach()
+
+
+    def calculate_LE(self,model_kwargs):
+        big_five_data = np.stack([
+            model_kwargs['y']['O'].cpu().numpy(),
+            model_kwargs['y']['C'].cpu().numpy(),
+            model_kwargs['y']['E'].cpu().numpy(),
+            model_kwargs['y']['A'].cpu().numpy(),
+            model_kwargs['y']['N'].cpu().numpy()
+        ], axis=1)#[bs,5]
+
+        NPE = np.array([
+            [-0.921, 0.928, -0.894, 0, -1],
+            [0, 0, 0, -1, 0],
+            [0, -0.857, 0.99, -1, 0.97],
+            [-0.931, 0.938, -1, 0, -0.762]
+        ])
+
+        contributions = big_five_data[:, np.newaxis, :] * NPE
+
+        positive_contributions = np.where(contributions > 0, contributions, -np.inf)
+        negative_contributions = np.where(contributions < 0, contributions, np.inf)
+
+        E_plus = np.max(positive_contributions, axis=2)
+        E_minus = np.min(negative_contributions, axis=2)
+        E_plus = np.where(E_plus == -np.inf, 0, E_plus)
+        E_minus = np.where(E_minus == np.inf, 0, E_minus)
+
+        LE = E_plus + E_minus #[bs,4]
+
+        return LE
+
+    def Labanguide(self, x, t, LE,model_kwargs=None, t_stopgrad=-10, scale=.5, n_guide_steps=10, train=False, min_variance=0.01):
+        """
+        Laban guidance
+        """
+        n_joint = 22 if x.shape[1] == 263 else 21
+        model_log_variance = _extract_into_tensor(self.posterior_log_variance_clipped, t, x.shape)
+        model_variance = torch.exp(model_log_variance)
+        
+        if model_variance[0, 0, 0, 0] < min_variance:
+            model_variance = min_variance
+
+        if train: #进行K次扰动
+            if t[0] < 20: #t[0]代表当前时间步t
+                n_guide_steps = 100
+            else:
+                n_guide_steps = 20
+        else:
+            if t[0] < 10:
+                n_guide_steps = 500
+            else:
+                n_guide_steps = 10
+
+           
+        mask_hint_space = torch.zeros((x.shape[0],x.shape[3],n_joint,1)) #[bs,seqlen,njoint,1]
+        idx_space = [ 7, 8,16, 17, 18, 19, 20, 21]
+        mask_hint_space[:, :, idx_space, :] = 1
+
+        mask_hint_weight = torch.zeros((x.shape[0],x.shape[3],n_joint,1))
+        idx_weight = [ 1,2,4,5,12,16,17]
+        mask_hint_weight[:, :, idx_weight, :] = 1
+
+        mask_hint = mask_hint_space + mask_hint_weight
+        # joint id
+        joint_ids = [1,2,4,5,7,8,12,16,17, 18, 19, 20, 21]
+        hint = model_kwargs['y']['hint'].clone().detach()
+        # hint = hint * self.raw_std + self.raw_mean #将标准化的hint恢复到原来尺度
+        hint = hint.view(hint.shape[0], hint.shape[1], n_joint, 3) * mask_hint.to(hint.device) #[bs,seqlen,njoints,3]
+
+        if not train:
+            scale = self.calc_grad_scale(mask_hint).to(x.device) #强度tao
+
+        if self.raw_std.device != x.device:
+            self.raw_mean = self.raw_mean.to(x.device) #带raw的是全局位置的平均值，不带的是相对位置的平均值
+            self.raw_std = self.raw_std.to(x.device)
+            self.mean = self.mean.to(x.device)
+            self.std = self.std.to(x.device)
+
+        for _ in range(n_guide_steps):
+            loss, grad = self.Labangradients(x, hint, mask_hint.to(hint.device), joint_ids)
+            grad = model_variance * grad
+            # print(loss.sum())
+            if t[0] >= t_stopgrad:
+                x = x - scale * grad.to(x.device)
+        return x.detach()
+
+
+    def normalize_euler(self,euler, joint_index, dim_index,angle,LE):
+        eulerMax = np.max(euler[:, :, joint_index, dim_index], axis=1, keepdims=True)
+        eulerMin = np.min(euler[:, :, joint_index, dim_index], axis=1, keepdims=True)
+        eulerMax = np.repeat(eulerMax, euler.shape[1], axis=1)  # [batch_size, seqlen]
+        eulerMin = np.repeat(eulerMin, euler.shape[1], axis=1)  # [batch_size, seqlen]
+
+        euler[:, :, joint_index, dim_index] = (euler[:, :, joint_index, dim_index] - eulerMin) / (eulerMax - eulerMin) * (eulerMax - angle * LE - (eulerMin + angle * LE)) + (eulerMin + angle * LE)
+        
+        return euler 
+
+
+    def Labanhint(self, x, LE): #根据laban修改后得到的全局位置，x:[bs,seqlen,263]
+        n_raw_offsets = torch.from_numpy(t2m_raw_offsets) #22*3，记录了后一节点相对于当前节点的标准旋转
+        kinematic_chain = t2m_kinematic_chain
+        tgt_skel = Skeleton(n_raw_offsets, kinematic_chain, 'cpu')
+        example_data = np.load('/sata/public/yyqi/testOmniControl/dataset/HumanML3D/example.npy')
+        example_data = example_data.reshape(len(example_data), -1, 3)
+        example_data = torch.from_numpy(example_data)   
+        tgt_offsets = tgt_skel.get_offsets_joints(example_data[0])
+        tgt_skel.set_offset(tgt_offsets)
+        face_joint_indx = [2, 1, 17, 16]
+        #是否需要去归一化，传入的是预测的x0
+        x = x.permute(0, 3, 1, 2).squeeze(-1)
+        x = x*self.std.to(x.device) +self.mean.to(x.device)
+        n_joints = 22 if x.shape[-1] == 263 else 21
+        
+
+        joint_pos = recover_from_ric(x, n_joints) #恢复全局位置[bs,seqlen,njoint,3]
+     
+        quat_params = tgt_skel.inverse_kinematics_np(joint_pos.detach().cpu().numpy(), face_joint_indx, smooth_forward=False)
+        quat_params_test = quat_params.copy()
+
+        euler = qeuler_np(quat_params,'xyz') #[bs,seqlen,njoint,3]弧度表示
+        LE_space = np.repeat(LE[:, 0][:, np.newaxis], euler.shape[1], axis=1) 
+        LE_weight = np.repeat(LE[:, 1][:, np.newaxis], euler.shape[1], axis=1) 
+
+        # 处理left_shoulder
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 16, 1 ,angle,LE_space) #[1,nframe,njoint,3]
+        euler = self.normalize_euler(euler, 16, 2 ,-angle,LE_space)
+        
+        #处理right_shoulder
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 17, 1 ,angle,LE_space)
+        euler = self.normalize_euler(euler, 17, 2 ,-angle,LE_space)
+       # 处理left_elbow
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 18, 2 ,-angle,LE_space) #[1,nframe,njoint,3]angle为-,代表角度要增加
+       
+        #处理right_elbow
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 19, 2 ,-angle,LE_space)
+
+       # 处理left_ankle
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 7, 1 ,angle,LE_space) #[1,nframe,njoint,3]angle为-,代表角度要增加
+       
+        #处理right_ankle
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 8, 1 ,angle,LE_space)
+
+        # 处理left_wrist
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 20, 1 ,-angle,LE_space) #[1,nframe,njoint,3]angle为-,代表角度要增加
+       
+        #处理right_wrist
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 20, 1 ,-angle,LE_space)
+        """ 处理weight """
+        #处理neck
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 12, 0 ,-angle,LE_weight)
+
+        #处理shoulder
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 16, 2 ,angle,LE_weight)
+        euler = self.normalize_euler(euler, 17, 2 ,angle,LE_weight)
+
+        #处理upper_leg
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 1, 0 ,angle,LE_weight)
+        euler = self.normalize_euler(euler, 2, 0 ,angle,LE_weight)
+
+        #处理lower_leg
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 4, 0 ,-angle,LE_weight)
+        euler = self.normalize_euler(euler, 5, 0 ,-angle,LE_weight)
+        
+        #处理spine
+
+        # quat_params_test[:,:,16:18,:] = euler_to_quaternion(euler[:,:,16:18,:],'xyz') #[bs,seqlen,njoint,4]
+        quat_params_test = euler_to_quaternion(euler,'xyz')
+        hint = tgt_skel.forward_kinematics_np(quat_params_test, joint_pos[:,:,0].squeeze()) #[bs,seqlen,njoint,3]
+        
+        # plot_3d_motion("./positions_old.mp4", kinematic_chain, x.squeeze(), 'old', fps=20)
+        # plot_3d_motion("./positions_new.mp4", kinematic_chain, hint.squeeze(), 'new', fps=20)
+
+        return torch.tensor(hint.reshape(x.shape[0],x.shape[1],n_joints*3))
+
+
+    def Labangradients(self, x, hint , mask_hint, joint_ids=None):
+        with torch.enable_grad():
+            x.requires_grad_(True)
+
+            x_ = x.permute(0, 3, 2, 1).contiguous() #(bs,seqlen,1,263)
+            x_ = x_.squeeze(2)
+            x_ = x_ * self.std + self.mean #传入的是均值，所以要去标准化
+            n_joints = 22 if x_.shape[-1] == 263 else 21
+            joint_pos = recover_from_ric(x_, n_joints) #恢复全局位置(bs,seqlen,njoint,3)
+
+
+            if n_joints == 21:
+                joint_pos = joint_pos * 0.001
+                hint = hint * 0.001
+
+            loss = torch.norm((joint_pos - hint.to(joint_pos.device)) * mask_hint.to(joint_pos.device), dim=-1) #对应于函数G[bs,seqlen,njoints]
+            grad = torch.autograd.grad([loss.sum()], [x])[0] #计算对x的梯度，即传入的均值[bs,263,1,seqlen]
+            # the motion in HumanML3D always starts at the origin (0,y,0), so we zero out the gradients for the root joint
+            grad[..., 0] = 0
+            x.detach()
+        return loss, grad
+
     
+
     def p_sample(
         self,
         model,
@@ -535,9 +748,12 @@ class GaussianDiffusion:
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
         )
-        if 'hint' in model_kwargs['y'].keys(): #key里有hint说明使用了spatial guidance
+        LE = self.calculate_LE(model_kwargs)
+        if t[0] == 999:#第一次去噪
+            model_kwargs['y']['hint'] = self.Labanhint(out['pred_xstart'],LE).to(x.device) #[bs,seqlen,njoint*3]
+        if 'O' in model_kwargs['y'].keys(): #key里有O说明使用了OCEAN
             # spatial guidance/classifier guidance
-            out['mean'] = self.guide(out['mean'], t, model_kwargs=model_kwargs) #根据spatial guidance修改均值
+            out['mean'] = self.Labanguide(out['mean'], t,LE, model_kwargs=model_kwargs) #根据Laban修改均值
 
         if const_noise:
             noise = th.randn_like(x[0])
@@ -696,6 +912,7 @@ class GaussianDiffusion:
                 yield out
                 img = out["sample"]
 
+
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None, dataset=None):
         """
         Compute training losses for a single timestep.
@@ -717,7 +934,8 @@ class GaussianDiffusion:
         if noise is None:
             noise = th.randn_like(x_start)
         x_t = self.q_sample(x_start, t, noise=noise)
-        # x_t = self.guide(x_t, t, model_kwargs=model_kwargs, train=True)
+        LE = self.calculate_LE(model_kwargs)
+        x_t = self.Labanguide(x_t, t, LE ,model_kwargs=model_kwargs, train=True)
         terms = {}
 
         model_output = model(x_t, self._scale_timesteps(t), **model_kwargs) #经过MDM预测后的结果[bs,d,1,seqlen]

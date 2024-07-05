@@ -8,12 +8,20 @@ import codecs as cs
 from tqdm import tqdm
 import spacy
 import re
+import math
 
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.humanml.utils.word_vectorizer import WordVectorizer
 from data_loaders.humanml.utils.get_opt import get_opt
 from ..scripts.motion_process import recover_root_rot_pos, recover_from_ric
 from data_loaders.humanml.utils.metrics import cross_combination_joints
+from data_loaders.humanml.scripts.motion_process import plot_3d_motion
+from data_loaders.humanml.common.skeleton import Skeleton
+from data_loaders.humanml.common.quaternion import *
+from data_loaders.humanml.utils.paramUtil import *
+from os.path import join as pjoin
+
+
 # import spacy
 
 def collate_fn(batch):
@@ -25,7 +33,7 @@ def collate_fn(batch):
 
 '''For use of training text motion matching model, and evaluations'''
 class Text2MotionDatasetV2(data.Dataset):
-    def __init__(self, opt, mean, std, split_file, w_vectorizer, mode, control_joint=0, density=100,O=0.0,C=0.0,E=0.0,A=0.0,N=0.0):
+    def __init__(self, opt, mean, std, split_file, w_vectorizer, mode, control_joint=0, density=100):
         self.opt = opt
         self.w_vectorizer = w_vectorizer
         self.max_length = 20
@@ -35,19 +43,14 @@ class Text2MotionDatasetV2(data.Dataset):
         min_motion_len = 40 if self.opt.dataset_name =='t2m' else 24
         self.control_joint = control_joint
         self.density = density
-        self.O = O
-        self.C = C
-        self.E = E
-        self.A = A
-        self.N = N
 
         data_dict = {}
         id_list = []
         with cs.open(split_file, 'r') as f:
             for line in f.readlines():
-                id_list.append(line.strip()) #读取训练数据集id
+                id_list.append(line.strip()) #读取数据集id
         # id_list = id_list[:200]
-        ocean = np.load(pjoin(opt.data_root, 'big_five.npy')) #读取大五人格数值
+        ocean = np.load(pjoin(opt.data_root, 'big_five_norm.npy')) #读取大五人格数值
         new_name_list = []
         length_list = []
         for name in tqdm(id_list):
@@ -92,23 +95,24 @@ class Text2MotionDatasetV2(data.Dataset):
                                 # break
 
                 if flag:
+                    #对每个人从big_five.npy中获得对应的OCEAN
                     gNumber = re.search(r'G(\d+)', name).group(1)
                     pNumber = re.search(r'P(\d+)', name).group(1)
                     oceanID = (int(gNumber)-1)*2 + int(pNumber) - 1
-                    self.O = ocean[oceanID][0]
-                    self.C = ocean[oceanID][1]
-                    self.E = ocean[oceanID][2]
-                    self.A = ocean[oceanID][3]
-                    self.N = ocean[oceanID][4]
+                    O = ocean[oceanID][0]
+                    C = ocean[oceanID][1]
+                    E = ocean[oceanID][2]
+                    A = ocean[oceanID][3]
+                    N = ocean[oceanID][4]
 
                     data_dict[name] = {'motion': motion,
                                        'length': len(motion),
                                        'text': text_data,
-                                       'O':self.O,
-                                       'C':self.C,
-                                       'E':self.E,
-                                       'A':self.A,
-                                       'N':self.N,}
+                                       'O':O,
+                                       'C':C,
+                                       'E':E,
+                                       'A':A,
+                                       'N':N,}
                     new_name_list.append(name)
                     length_list.append(len(motion))
             except:
@@ -123,7 +127,7 @@ class Text2MotionDatasetV2(data.Dataset):
         elif 'KIT' in opt.data_root:
             spatial_norm_path = './dataset/kit_spatial_norm'
         elif 'OCEAN' in opt.data_root:
-            spatial_norm_path = './dataset/humanml_spatial_norm'
+            spatial_norm_path = '/sata/public/yyqi/Dataset/OCEAN' #存放全局位置的平均值和标准差
         else:
             raise NotImplementedError('unknown dataset')
         self.raw_mean = np.load(pjoin(spatial_norm_path, 'Mean_raw.npy'))
@@ -247,6 +251,104 @@ class Text2MotionDatasetV2(data.Dataset):
         joints = (joints - self.raw_mean.reshape(n_joints, 3)) / self.raw_std.reshape(n_joints, 3)
         joints = joints * mask_seq
         return joints
+    
+    def normalize_euler(self,euler, joint_index, dim_index,angle,LE):
+        eulerMax = np.max(euler[:, :, joint_index, dim_index], axis=1, keepdims=True)
+        eulerMin = np.min(euler[:, :, joint_index, dim_index], axis=1, keepdims=True)
+        eulerMax = np.repeat(eulerMax, euler.shape[1], axis=1)  # [batch_size, seqlen]
+        eulerMin = np.repeat(eulerMin, euler.shape[1], axis=1)  # [batch_size, seqlen]
+
+        euler[:, :, joint_index, dim_index] = (euler[:, :, joint_index, dim_index] - eulerMin) / (eulerMax - eulerMin) * (eulerMax - angle * LE - (eulerMin + angle * LE)) + (eulerMin + angle * LE)
+        
+        return euler 
+
+
+    def Labanhint(self, x, LE): #根据laban修改后得到的全局位置，x:[bs,seqlen,njoint,3]
+        n_raw_offsets = torch.from_numpy(t2m_raw_offsets) #22*3，记录了后一节点相对于当前节点的标准旋转
+        kinematic_chain = t2m_kinematic_chain
+        tgt_skel = Skeleton(n_raw_offsets, kinematic_chain, 'cpu')
+        example_data = np.load('/sata/public/yyqi/testOmniControl/dataset/HumanML3D/example.npy')
+        example_data = example_data.reshape(len(example_data), -1, 3)
+        example_data = torch.from_numpy(example_data)   
+        tgt_offsets = tgt_skel.get_offsets_joints(example_data[0])
+        tgt_skel.set_offset(tgt_offsets)
+        face_joint_indx = [2, 1, 17, 16]
+
+        quat_params = tgt_skel.inverse_kinematics_np(x, face_joint_indx, smooth_forward=False)
+        # quat_params = qfix(quat_params) #[bs,nframe,njoint,4]
+
+        # r_rot = quat_params[:,:, 0].copy() #[bs,seqlen,4]
+        # r_velocity = qmul_np(r_rot[:,1:], qinv_np(r_rot[:,:-1])) #[bs,seqlen-1,4]
+        # quat_params[:,1:, 0] = r_velocity
+
+        quat_params_test = quat_params.copy()
+
+        euler = qeuler_np(quat_params,'xyz') #[bs,nframe,njoint,3]弧度表示
+        LE_space = np.repeat(LE[0], euler.shape[1], axis=0)[np.newaxis,:] 
+        LE_weight = np.repeat(LE[1], euler.shape[1], axis=0)[np.newaxis,:] 
+
+        # 处理left_shoulder
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 16, 1 ,angle,LE_space) #[1,nframe,njoint,3]
+        euler = self.normalize_euler(euler, 16, 2 ,-angle,LE_space)
+        
+        #处理right_shoulder
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 17, 1 ,angle,LE_space)
+        euler = self.normalize_euler(euler, 17, 2 ,-angle,LE_space)
+       # 处理left_elbow
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 18, 2 ,-angle,LE_space) #[1,nframe,njoint,3]angle为-,代表角度要增加
+       
+        #处理right_elbow
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 19, 2 ,-angle,LE_space)
+
+       # 处理left_ankle
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 7, 1 ,angle,LE_space) #[1,nframe,njoint,3]angle为-,代表角度要增加
+       
+        #处理right_ankle
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 8, 1 ,angle,LE_space)
+
+        # 处理left_wrist
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 20, 1 ,-angle,LE_space) #[1,nframe,njoint,3]angle为-,代表角度要增加
+       
+        #处理right_wrist
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 20, 1 ,-angle,LE_space)
+        """ 处理weight """
+        #处理neck
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 12, 0 ,-angle,LE_weight)
+
+        #处理shoulder
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 16, 2 ,angle,LE_weight)
+        euler = self.normalize_euler(euler, 17, 2 ,angle,LE_weight)
+
+        #处理upper_leg
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 1, 0 ,angle,LE_weight)
+        euler = self.normalize_euler(euler, 2, 0 ,angle,LE_weight)
+
+        #处理lower_leg
+        angle = math.pi/180*10
+        euler = self.normalize_euler(euler, 4, 0 ,-angle,LE_weight)
+        euler = self.normalize_euler(euler, 5, 0 ,-angle,LE_weight)
+        
+        #处理spine
+
+        # quat_params_test[:,:,16:18,:] = euler_to_quaternion(euler[:,:,16:18,:],'xyz') #[bs,seqlen,njoint,4]
+        quat_params_test = euler_to_quaternion(euler,'xyz')
+        hint = tgt_skel.forward_kinematics_np(quat_params_test, x[:,:,0].squeeze())
+        
+        # plot_3d_motion("./positions_old.mp4", kinematic_chain, x.squeeze(), 'old', fps=20)
+        # plot_3d_motion("./positions_new.mp4", kinematic_chain, hint.squeeze(), 'new', fps=20)
+
+        return hint
         
     def __len__(self):
         return len(self.data_dict) - self.pointer
@@ -299,17 +401,46 @@ class Text2MotionDatasetV2(data.Dataset):
         n_joints = 22 if motion.shape[-1] == 263 else 21
         # hint is global position of the controllable joints
         joints = recover_from_ric(torch.from_numpy(motion).float(), n_joints)
-        joints = joints.numpy()
+        joints = joints.numpy()[np.newaxis, :] #[bs,nframe,njoint,3]
+
+        #计算LE
+        big_five_data = np.stack([O,C,E,A,N], axis=0)
+        NPE = np.array([
+            [-0.921, 0.928, -0.894, 0, -1],
+            [0, 0, 0, -1, 0],
+            [0, -0.857, 0.99, -1, 0.97],
+            [-0.931, 0.938, -1, 0, -0.762]
+        ])
+
+        E_plus = np.zeros(4)
+        E_minus = np.zeros(4)
+
+        for i in range(4):
+            positive_contributions = NPE[i] * big_five_data
+            negative_contributions = NPE[i] * big_five_data
+            
+            positive_contributions = positive_contributions[positive_contributions > 0]
+            negative_contributions = negative_contributions[negative_contributions < 0]
+            
+            if positive_contributions.size > 0:
+                E_plus[i] = np.max(positive_contributions)
+            if negative_contributions.size > 0:
+                E_minus[i] = np.min(negative_contributions)
+        LE = E_plus + E_minus
 
         # control any joints at any time
         if self.mode == 'train':
             # hint = self.random_mask_train_cross(joints, n_joints)
-            hint = self.random_mask_train(joints, n_joints)
+            # hint = self.random_mask_train(joints, n_joints)
+            hint = self.Labanhint(joints,LE)
+
+
         else:
             # hint = self.random_mask_cross(joints, n_joints)
-            hint = self.random_mask(joints, n_joints)
+            # hint = self.random_mask(joints, n_joints)
+            hint  = None
 
-        hint = hint.reshape(hint.shape[0], -1) #[帧数，22*3]
+        hint = hint.reshape(hint.shape[1], -1) #[帧数，22*3]
         if m_length < self.max_motion_length:
             hint = np.concatenate([hint,
                                    np.zeros((self.max_motion_length - m_length, hint.shape[1]))
@@ -470,7 +601,7 @@ class KIT(HumanML3D):
 
 
 class Interx(data.Dataset):
-    def __init__(self, mode, datapath='dataset/interx_opt.txt', split="train", O=0,C=0,E=0,A=0,N=0, **kwargs):
+    def __init__(self, mode, datapath='dataset/interx_opt.txt', split="train",  **kwargs):
         self.mode = mode
         
         self.dataset_name = 'interx'
@@ -512,7 +643,7 @@ class Interx(data.Dataset):
             self.t2m_dataset = TextOnlyDataset(self.opt, self.mean, self.std, self.split_file)
         else:
             self.w_vectorizer = WordVectorizer(pjoin(abs_base_path, 'glove'), 'our_vab')
-            self.t2m_dataset = Text2MotionDatasetV2(self.opt, self.mean, self.std, self.split_file, self.w_vectorizer, mode, O,C,E,A,N)
+            self.t2m_dataset = Text2MotionDatasetV2(self.opt, self.mean, self.std, self.split_file, self.w_vectorizer, mode)
             self.num_actions = 1 # dummy placeholder
 
         assert len(self.t2m_dataset) > 1, 'You loaded an empty dataset, ' \

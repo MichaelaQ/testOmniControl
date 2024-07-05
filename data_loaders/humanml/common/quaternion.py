@@ -140,10 +140,10 @@ def qrot_np(q, v):
 def qeuler_np(q, order, epsilon=0, use_gpu=False):
     if use_gpu:
         q = torch.from_numpy(q).cuda().float()
-        return qeuler(q, order, epsilon).cpu().numpy()
+        return qeuler(q, order, epsilon,False).cpu().numpy()
     else:
         q = torch.from_numpy(q).contiguous().float()
-        return qeuler(q, order, epsilon).numpy()
+        return qeuler(q, order, epsilon,False).numpy()
 
 
 def qfix(q):
@@ -155,14 +155,16 @@ def qfix(q):
     Expects a tensor of shape (L, J, 4), where L is the sequence length and J is the number of joints.
     Returns a tensor of the same shape.
     """
-    assert len(q.shape) == 3
+    assert len(q.shape) == 4
     assert q.shape[-1] == 4
 
+
     result = q.copy()
-    dot_products = np.sum(q[1:] * q[:-1], axis=2)
+    dot_products = np.sum(q[:,1:] * q[:,:-1], axis=3)
     mask = dot_products < 0
-    mask = (np.cumsum(mask, axis=0) % 2).astype(bool)
-    result[1:][mask] *= -1
+    mask = (np.cumsum(mask, axis=1) % 2).astype(bool)
+    result[:,1:][mask] *= -1
+
     return result
 
 

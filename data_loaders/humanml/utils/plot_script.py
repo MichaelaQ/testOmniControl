@@ -27,7 +27,7 @@ def list_cut_average(ll, intervals):
 
 
 def plot_3d_motion(save_path, kinematic_tree, joints, title, dataset, figsize=(3, 3), fps=120, radius=3,
-                   vis_mode='default', gt_frames=[], hint=None):
+                   vis_mode='default', gt_frames=[]):
     matplotlib.use('Agg')
 
     title = '\n'.join(wrap(title, 20))
@@ -59,16 +59,18 @@ def plot_3d_motion(save_path, kinematic_tree, joints, title, dataset, figsize=(3
     # preparation related to specific datasets
     if dataset == 'kit':
         data *= 0.003  # scale for visualization
-        if hint is not None:
-            mask = hint.sum(-1) != 0
-            hint = hint[mask]
-            hint *= 0.003
+        # if hint is not None:
+        #     mask = hint.sum(-1) != 0
+        #     hint = hint[mask]
+        #     hint *= 0.003
     elif dataset == 'humanml':
         data *= 1.3  # scale for visualization
-        if hint is not None:
-            mask = hint.sum(-1) != 0
-            hint = hint[mask]
-            hint *= 1.3
+        # if hint is not None:
+        #     mask = hint.sum(-1) != 0
+        #     hint = hint[mask]
+        #     hint *= 1.3
+    elif dataset == 'interx':
+        data *= 1.3
 
     fig = plt.figure(figsize=figsize)
     plt.tight_layout()
@@ -89,8 +91,8 @@ def plot_3d_motion(save_path, kinematic_tree, joints, title, dataset, figsize=(3
 
     height_offset = MINS[1]
     data[:, :, 1] -= height_offset
-    if hint is not None:
-        hint[..., 1] -= height_offset
+    # if hint is not None:
+    #     hint[..., 1] -= height_offset
     trajec = data[:, 0, [0, 2]]
 
     data[..., 0] -= data[:, 0:1, 0]
@@ -105,8 +107,8 @@ def plot_3d_motion(save_path, kinematic_tree, joints, title, dataset, figsize=(3
         plot_xzPlane(MINS[0] - trajec[index, 0], MAXS[0] - trajec[index, 0], 0, MINS[2] - trajec[index, 1],
                      MAXS[2] - trajec[index, 1])
 
-        if hint is not None:
-            ax.scatter(hint[..., 0] - trajec[index, 0], hint[..., 1], hint[..., 2] - trajec[index, 1], color="#80B79A")
+        # if hint is not None:
+        #     ax.scatter(hint[..., 0] - trajec[index, 0], hint[..., 1], hint[..., 2] - trajec[index, 1], color="#80B79A")
 
         used_colors = colors_blue if index in gt_frames else colors
         for i, (chain, color) in enumerate(zip(kinematic_tree, used_colors)):
